@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gobwas/glob"
+
 	"code.gitea.io/gitea/models"
 	git_model "code.gitea.io/gitea/models/git"
 	issues_model "code.gitea.io/gitea/models/issues"
@@ -24,8 +26,6 @@ import (
 	"code.gitea.io/gitea/modules/process"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/util"
-
-	"github.com/gobwas/glob"
 )
 
 // DownloadDiffOrPatch will write the patch for the pr to the writer
@@ -61,6 +61,34 @@ var patchErrorSuffices = []string{
 func TestPatch(pr *issues_model.PullRequest) error {
 	ctx, _, finished := process.GetManager().AddContext(graceful.GetManager().HammerContext(), fmt.Sprintf("TestPatch: %s", pr))
 	defer finished()
+
+	if !git.IsBranchExist(ctx, pr.BaseRepo.RepoPath(), pr.HeadBranch) {
+		log.Info("Create temp branch %s commit: refs/pull/%d/head", pr.HeadBranch, pr.Index)
+		repo, err := git.OpenRepository(ctx, pr.BaseRepo.RepoPath())
+		if err != nil {
+			return fmt.Errorf("unable to create temp branch: %s in repo: %s, open error: %s", pr.HeadBranch, pr.BaseRepo.FullName(), err)
+		}
+		if err := repo.CreateBranch(pr.HeadBranch, fmt.Sprintf("refs/pull/%d/head", pr.Index)); err != nil {
+			return fmt.Errorf("unable to create temp branch: %s in repo: %s, create error: %s", pr.HeadBranch, pr.BaseRepo.FullName(), err)
+		}
+		defer func() {
+			repo.DeleteBranch(pr.HeadBranch, git.DeleteBranchOptions{})
+		}()
+	}
+
+	if !git.IsBranchExist(ctx, pr.BaseRepo.RepoPath(), pr.BaseBranch) {
+		log.Info("Create temp base branch %s commit: %s", pr.BaseBranch, pr.MergeBase)
+		repo, err := git.OpenRepository(ctx, pr.BaseRepo.RepoPath())
+		if err != nil {
+			return fmt.Errorf("unable to create temp base branch: %s in repo: %s, open error: %s", pr.HeadBranch, pr.BaseRepo.FullName(), err)
+		}
+		if err := repo.CreateBranch(pr.BaseBranch, pr.MergeBase); err != nil {
+			return fmt.Errorf("unable to create temp base branch: %s in repo: %s, create error: %s", pr.HeadBranch, pr.BaseRepo.FullName(), err)
+		}
+		defer func() {
+			repo.DeleteBranch(pr.BaseBranch, git.DeleteBranchOptions{})
+		}()
+	}
 
 	// Clone base repo.
 	prCtx, cancel, err := createTemporaryRepoForPR(ctx, pr)
